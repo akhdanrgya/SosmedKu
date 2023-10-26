@@ -1,111 +1,144 @@
-'use server'
+"use server";
 
 import { revalidatePath } from "next/cache";
 import Thread from "../models/thread.model";
 import User from "../models/user.model";
 import { connectToDb } from "../mongoose";
 
-
 interface Params {
-    text: string,
-    author: string,
-    communityId: string | null,
-    path: string,
-
+  text: string;
+  author: string;
+  communityId: string | null;
+  path: string;
 }
 
+export async function createThread({
+  text,
+  author,
+  communityId,
+  path,
+}: Params) {
+  try {
+    connectToDb();
 
-export async function createThread({text, author, communityId, path}: Params) {
-    
+    const createdThread = await Thread.create({
+      text,
+      author,
+      community: null,
+    });
+    //Update user model anjay
+
+    await User.findByIdAndUpdate(author, {
+      $push: { threads: createdThread._id },
+    });
+
+    revalidatePath(path);
+  } catch (error: any) {
+    throw new Error(`Error creating Thread: ${error.message}`);
+  }
+}
+
+export async function fetchPosts(pageNumber = 1, pageSize = 20) {
+  connectToDb();
+
+  //ini untuk kalkulasi momor post untuk di skip pokoknya gitu
+  const skipAmount = (pageNumber - 1) * pageSize;
+
+  // ini fetch post yang tidak ada parents nya( top-level threads...)
+  const postsQuery = Thread.find({ parendId: { $in: [null, undefined] } })
+    .sort({ createdAt: "desc" })
+    .skip(skipAmount)
+    .limit(pageSize)
+    .populate({ path: "author", model: User })
+    .populate({
+      path: "children", // Populate the children field
+      populate: {
+        path: "author", // Populate the author field within children
+        model: User,
+        select: "_id name parentId image", // Select only _id and username fields of the author
+      },
+    });
+
+  const totalPostsCount = await Thread.countDocuments({
+    parentId: { $in: [null, undefined] },
+  });
+
+  const posts = await postsQuery.exec();
+
+  const isNext = totalPostsCount > skipAmount + posts.length;
+  return { posts, isNext };
+}
+
+export async function fetchThreadById(id: string) {
+  connectToDb();
+
+  try {
+    // untuk populate community nanti
+
+    const thread = await Thread.findById(id)
+      .populate({
+        path: "author",
+        model: User,
+        select: "_id id name image",
+      })
+      .populate({
+        path: "children",
+        populate: [
+          {
+            path: "author",
+            model: User,
+            select: "_id id name parentId image",
+          },
+          {
+            path: "children",
+            model: Thread,
+            populate: {
+              path: "author",
+              model: User,
+              select: "_id id name parentId image",
+            },
+          },
+        ],
+      })
+      .exec();
+
+    return thread;
+  } catch (error: any) {
+    throw new Error(`Error fetching Thread : ${error.message}`);
+  }
+}
+
+export async function addCommentToThread(threadId: string, commentText: string, userId: string, path: string){
+    connectToDb()
+
+
     try {
-        connectToDb()
-    
-        const createdThread = await Thread.create({
-            text,
-            author,
-            community: null,
+        // mencari original thread berdasarkan id
+        const originalThread = await Thread.findById(threadId)
+
+        if(!originalThread){
+            throw new Error('Thread not found')
+        }
+
+
+        // Membuat thread baru dengan comment text
+        const commentThread = new Thread({
+            text: commentText,
+            author: userId,
+            parentId: threadId
         })
-        //Update user model anjay
-    
-        await User.findByIdAndUpdate(author, {
-            $push: {threads: createdThread._id}
-        })
-    
+
+        //menyimpan thread baru
+        const savedCommentThread = await commentThread.save()
+
+        // untuk update original thread termasuk comment barunya anjay mabar gua pusing
+        originalThread.children.push(savedCommentThread._id)
+
+        // menyimpan original thread
+        await originalThread.save()
+
         revalidatePath(path)
     } catch (error: any) {
-        throw new Error(`Error creating Thread: ${error.message}`)
+        throw Error(`Error adding comment to thread: ${error.message}`)
     }
-    
-}
-
-export async function fetchPosts(pageNumber = 1, pageSize = 20){
-    connectToDb()
-
-    //ini untuk kalkulasi momor post untuk di skip pokoknya gitu
-    const skipAmount = (pageNumber - 1) * pageSize
-
-
-
-    // ini fetch post yang tidak ada parents nya( top-level threads...)
-    const postsQuery = Thread.find({ parendId: { $in: [null, undefined]}})
-        .sort({ createdAt: 'desc'})
-        .skip(skipAmount)
-        .limit(pageSize)
-        .populate({ path: 'author', model: User})
-        .populate({
-            path: "children", // Populate the children field
-            populate: {
-              path: "author", // Populate the author field within children
-              model: User,
-              select: "_id name parentId image", // Select only _id and username fields of the author
-            },
-          });
-
-          const totalPostsCount = await Thread.countDocuments({
-            parentId: { $in: [null, undefined] },
-          });
-
-        const posts = await postsQuery.exec()
-
-        const isNext = totalPostsCount > skipAmount + posts.length
-        return { posts, isNext }
-}
-
-export async function fetchThreadById(id: string){
-    connectToDb()
-
-    try {
-        // untuk populate community nanti
-
-
-        const thread = await Thread.findById(id)
-        .populate({
-            path: 'author',
-            model: User,
-            select: '_id id name image'
-        })
-        .populate({
-            path: "children",
-            populate: [
-              {
-                path: "author",
-                model: User,
-                select: "_id id name parentId image",
-              },
-              {
-                path: "children",
-                model: Thread, 
-                populate: {
-                  path: "author",
-                  model: User,
-                  select: "_id id name parentId image",
-                },
-              },
-            ],
-          }).exec()
-
-        return thread;
-    } catch (error: any) {
-        throw new Error(`Error fetching Thread : ${error.message}`)
-    }
-}
+};
